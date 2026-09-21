@@ -243,6 +243,30 @@ function perYear(item){
 /* An expense that is coming back only counts against the budget for the part
    you actually carry. The whole amount still leaves the account this month;
    the refund lands as cash in whatever month it turns up. */
+/* Straight-line projection: what you have spent so far, carried at the same
+   daily pace to the end of the month. Held back for the first week because
+   pace early in a month is mostly noise. */
+var PROJ_MIN_DAYS = 7;
+function elapsedIn(mk){
+  var cur = monthKey(todayISO());
+  if(mk < cur) return daysInMonth(mk);
+  if(mk > cur) return 0;
+  return new Date().getDate();
+}
+function canProject(mk){
+  return mk === monthKey(todayISO()) && elapsedIn(mk) >= PROJ_MIN_DAYS;
+}
+function projectSpend(spent, mk){
+  return spent * daysInMonth(mk) / Math.max(elapsedIn(mk),1);
+}
+function projPhrase(budget, projected){
+  var diff = budget - projected;
+  return {
+    color: diff < 0 ? "var(--over)" : "var(--safe)",
+    text: "On pace for "+money(projected,false)+" · "+money(Math.abs(diff),false)+(diff<0?" over":" under")
+  };
+}
+
 function reimbOf(t){ return t.reimb || 0; }
 function netOf(t){ return t.amount - reimbOf(t); }
 function pendingReimb(){
@@ -361,7 +385,25 @@ function stats(){
   var monthlyOutflow = billsCash + contrib + shortfall;
 
   var left = budgeted-spent, dl = daysLeftIn(mk);
-  return { tx:tx, byCat:byCat, spent:spent, cashOut:cashOut, reimbIn:reimbIn,
+  var proj = canProject(mk);
+  var projSpent = null;
+  if(proj){
+    projSpent = 0;
+    var known = {};
+    d.categories.forEach(function(c){
+      known[c.id] = 1;
+      var sc = byCat[c.id] || 0;
+      projSpent += sc > 0 ? projectSpend(sc, mk) : (c.budget || 0);
+    });
+    Object.keys(byCat).forEach(function(cid){
+      if(!known[cid]) projSpent += projectSpend(byCat[cid], mk);
+    });
+  }
+  var cashNow = income+reimbIn-monthlyOutflow-cashOut;
+  return { proj:proj, projSpent:projSpent,
+           projVar: proj ? budgeted-projSpent : null,
+           projCash: proj ? cashNow-(projSpent-spent) : null,
+           isPast: mk < monthKey(todayISO()), elapsed: elapsedIn(mk), tx:tx, byCat:byCat, spent:spent, cashOut:cashOut, reimbIn:reimbIn,
            pending:pend, pendTotal:pendTotal, budgeted:budgeted,
            billList:billList, incomeList:incomeList, isPaid:isPaid, isIn:isIn,
            bills:bills, billsPaid:billsPaid, billsUnpaid:bills-billsPaid,
@@ -504,6 +546,10 @@ function renderReceipt(){
            '<div class="stat"><b style="color:'+col+'">'+money(Math.max(l.perDay,0),false)+'</b><span>Per day ('+r.daysLeft+'d)</span></div>'+
            '</div>';
       if(l.pct>100) h += '<div style="color:var(--over);font-size:14px;margin-top:16px">'+money(Math.abs(l.left),false)+' over budget with '+r.daysLeft+' days left.</div>';
+      if(l.projected!==null){
+        var pp = projPhrase(l.budget, l.projected);
+        h += '<div style="color:'+pp.color+';font-size:14px;font-weight:600;margin-top:14px">'+pp.text+' by month end</div>';
+      }
     } else {
       h += '<div style="color:var(--muted);font-size:14px;margin-top:20px">No budget on '+esc(l.cat)+' yet — '+money(l.spent,false)+' spent this month.</div>';
     }
@@ -537,6 +583,22 @@ function renderMonth(){
   h += '<div class="big">'+money(st.left,false)+'</div>';
   h += '<div class="hdr-line">left across all budgets · '+
        (st.daysLeft>0 ? money(Math.max(st.perDay,0),false)+"/day for "+st.daysLeft+" days" : "month closed")+'</div>';
+  if(st.proj){
+    var under = st.projVar >= 0;
+    h += '<div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:'+(under?"#1F4A3E":"#4A2A26")+'">'+
+         '<div style="font-size:15px;font-weight:600;color:'+(under?"#9FD9BD":"#F4B3A8")+'">'+
+           'On pace to finish '+money(Math.abs(st.projVar),false)+(under?" under":" over")+' budget</div>'+
+         '<div style="font-size:12px;color:#C7D8DC;margin-top:2px">Projected spend '+money(st.projSpent,false)+
+           ' of '+money(st.budgeted,false)+
+           (st.income>0 ? ' · month-end cash at this pace '+money(st.projCash,false) : '')+'</div></div>';
+  } else if(S.mk === monthKey(todayISO()) && st.budgeted>0){
+    h += '<div style="margin-top:12px;font-size:12px;color:#9DB6BC">Month-end projection starts on the '+
+         ordinal(PROJ_MIN_DAYS)+' — too early to call.</div>';
+  } else if(st.isPast && st.budgeted>0 && st.tx.length){
+    var fin = st.budgeted - st.spent;
+    h += '<div style="margin-top:12px;font-size:14px;font-weight:600;color:'+(fin>=0?"#9FD9BD":"#F4B3A8")+'">'+
+         'Finished '+money(Math.abs(fin),false)+(fin>=0?" under":" over")+' budget</div>';
+  }
   h += '<div class="sub" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:4px 20px">'+
        '<span>Spent '+money(st.spent,false)+'</span>'+
        '<span>Bills '+money(st.billsPaid,false)+' of '+money(st.bills,false)+' paid</span>'+
@@ -559,7 +621,12 @@ function renderMonth(){
          '<div class="meta">'+money(s,false)+' of '+(c.budget?money(c.budget,false):"—")+
          (c.budget>0 ? ' · '+Math.round(pct)+'% used' : '')+
          (c.budget>0 && st.daysLeft>0 ? ' · '+money(Math.max((c.budget-s)/st.daysLeft,0),false)+'/day' : '')+
-         '</div></div>';
+         '</div>'+
+         (st.proj && c.budget>0 && s>0
+            ? (function(){ var pp = projPhrase(c.budget, projectSpend(s, S.mk));
+                return '<div class="meta" style="margin-top:2px;font-weight:600;color:'+pp.color+'">'+pp.text+'</div>'; })()
+            : '')+
+         '</div>';
   });
 
   h += recurringSection("Bills", st.billList, st.isPaid,
@@ -837,7 +904,9 @@ function legReceipt(categoryId, amt, prior, st, date, reimb){
   var newSpent = (st.byCat[categoryId]||0)+prior+amt;
   var dl = Math.max(daysLeftIn(monthKey(date)),1);
   var b = c ? (c.budget||0) : 0;
-  return { cat: c?c.name:"Uncategorized", amount:amt, budget:b, spent:newSpent,
+  var pmk = monthKey(date);
+  var projected = (b>0 && canProject(pmk)) ? projectSpend(newSpent, pmk) : null;
+  return { cat: c?c.name:"Uncategorized", amount:amt, budget:b, spent:newSpent, projected:projected,
            left:b-newSpent, pct: b ? (newSpent/b)*100 : null, perDay:(b-newSpent)/dl };
 }
 

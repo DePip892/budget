@@ -1,5 +1,5 @@
 /* Offline cache for the Budget app. Bump CACHE when you replace index.html. */
-var CACHE = "budget-v8";
+var CACHE = "budget-v9";
 var ASSETS = ["./", "./index.html"];
 
 self.addEventListener("install", function(e){
