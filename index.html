@@ -88,6 +88,8 @@ input{font-family:inherit;font-size:16px}
 .mchip{border:1px solid var(--line);background:none;border-radius:8px;padding:6px 8px;font-size:11px;color:var(--muted);min-width:40px}
 .mchip.on{border-color:var(--safe);color:var(--safe);background:#EAF2EE;font-weight:600}
 .schedhint{font-size:11px;color:var(--muted);padding:0 8px 6px}
+.addbtn{border:0;background:var(--safe);color:#fff;border-radius:10px;padding:8px 12px;font-size:14px;font-weight:600;flex:0 0 auto}
+.addrow .nm{border-bottom:1px dashed #CBD3CD !important}
 .recitem{border-bottom:1px solid var(--line);padding:4px 0}
 .recitem:last-child{border-bottom:0}
 .caption{font-size:12px;color:var(--muted);margin:-2px 0 8px}
@@ -793,7 +795,7 @@ function addRow(kind, placeholder){
     '<input class="nm" data-draft="'+kind+':name" placeholder="'+placeholder+'" value="'+esc(d.name)+'">'+
     '<span style="color:var(--muted);font-family:var(--mono);font-size:14px">$</span>'+
     '<input class="amt" inputmode="decimal" data-draft="'+kind+':amount" placeholder="0" value="'+esc(d.amount)+'">'+
-    '<button class="linkbtn" style="padding:0 4px" data-act="add" data-kind="'+kind+'">Add</button></div>';
+    '<button class="addbtn" data-act="add" data-kind="'+kind+'">+ Add</button></div>';
 }
 
 function planLine(){
@@ -880,12 +882,18 @@ function render(){
       return '<button class="tab'+(S.tab===t?" on":"")+'" data-act="tab" data-t="'+t+'">'+label+'</button>';
     }).join("")+'</div>';
 
-  if(S.flash) h += '<div style="position:fixed;left:16px;right:16px;bottom:80px;background:var(--over);color:#fff;padding:12px 16px;border-radius:12px;font-size:14px">'+esc(S.flash)+'</div>';
+  if(S.flash) h += '<div style="position:fixed;left:16px;right:16px;bottom:80px;background:'+(S.flashOk?"var(--safe)":"var(--over)")+';color:#fff;padding:12px 16px;border-radius:12px;font-size:14px">'+esc(S.flash)+'</div>';
   document.getElementById("app").innerHTML = h;
   if(S.spend.showNote && S.tab==="spend" && !S.spend.receipt){
     var n = document.getElementById("noteinput");
     if(n && document.activeElement!==n){ n.focus(); }
   }
+}
+
+function flash(msg, ok){
+  S.flash = msg; S.flashOk = !!ok; render();
+  clearTimeout(flash._t);
+  flash._t = setTimeout(function(){ S.flash=null; render(); }, 2200);
 }
 
 /* ---------- actions ---------- */
@@ -1114,13 +1122,25 @@ document.addEventListener("click", function(e){
     S.armed=null; save();
   }
   else if(act==="add"){
-    var kind = el.dataset.kind, dr = S.draft[kind];
-    if(!dr.name.trim()) return;
-    var amt = parseFloat(dr.amount)||0;
-    if(kind==="cat") S.data.categories.push({id:uid(), name:dr.name.trim(), budget:amt});
-    else S.data.recurring.push({id:uid(), name:dr.name.trim(), amount:amt, day:1, type: kind==="bill"?"bill":"income"});
+    /* Read the boxes directly. iOS autocorrect can change a field's text without
+       firing an input event, so the draft copy is not trustworthy on its own. */
+    if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    var kind = el.dataset.kind;
+    var nEl = document.querySelector('[data-draft="'+kind+':name"]');
+    var aEl = document.querySelector('[data-draft="'+kind+':amount"]');
+    var newName = ((nEl ? nEl.value : S.draft[kind].name) || "").trim();
+    var newAmt = parseFloat(aEl ? aEl.value : S.draft[kind].amount) || 0;
+    if(!newName){
+      flash("Type a name first, then tap Add.", false);
+      return;
+    }
+    if(kind==="cat") S.data.categories.push({id:uid(), name:newName, budget:newAmt});
+    else S.data.recurring.push({id:uid(), name:newName, amount:newAmt, day:1,
+                                type: kind==="bill"?"bill":"income", auto:true, wknd:""});
     S.draft[kind] = {name:"", amount:""};
     save();
+    flash("Added "+newName+(kind==="cat"?"":" — set its day below"), true);
+    return;
   }
   else if(act==="csv"){ downloadFile("transactions-"+todayISO()+".csv", csvText(), "text/csv"); }
   else if(act==="sumcsv"){ downloadFile("budget-summary-"+todayISO()+".csv", summaryCsv(), "text/csv"); }
@@ -1142,7 +1162,7 @@ document.addEventListener("click", function(e){
   render();
 });
 
-document.addEventListener("input", function(e){
+function onFieldEdit(e){
   var el = e.target;
   if(el.dataset.edit){
     var parts = el.dataset.edit.split(":"), kind = parts[0], field = parts[1], id = el.dataset.id;
@@ -1175,6 +1195,22 @@ document.addEventListener("input", function(e){
   } else if(el.dataset.draft){
     var p = el.dataset.draft.split(":");
     S.draft[p[0]][p[1]] = el.value;
+  }
+}
+document.addEventListener("input", onFieldEdit);
+document.addEventListener("change", onFieldEdit);
+
+/* Return on the keyboard adds the row, same as tapping Add. */
+document.addEventListener("keydown", function(e){
+  if(e.key !== "Enter") return;
+  var el = e.target;
+  if(el.dataset && el.dataset.draft){
+    e.preventDefault();
+    var kind = el.dataset.draft.split(":")[0];
+    var btn = document.querySelector('[data-act="add"][data-kind="'+kind+'"]');
+    if(btn) btn.click();
+  } else if(el.tagName === "INPUT" && el.blur){
+    el.blur();
   }
 });
 
