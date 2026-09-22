@@ -129,15 +129,54 @@ function money(n, cents){
 }
 function pad(n){ return String(n).padStart(2,"0"); }
 function todayISO(){ var d=new Date(); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
-function monthKey(iso){ return iso.slice(0,7); }
-function monthLabel(mk){ var p=mk.split("-"); return new Date(+p[0],+p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"}); }
+/* A budget month ("period") is keyed by the calendar month it starts in and runs
+   from the cycle day to the day before the next cycle day. With the cycle on the
+   1st this is exactly the calendar month. The cycle day can follow a weekend
+   rule, so a payday-based month starts on the day the money actually lands. */
+function calDim(cm){ var p=cm.split("-"); return new Date(+p[0],+p[1],0).getDate(); }
+function parseISO(iso){ var p=iso.split("-"); return new Date(+p[0],+p[1]-1,+p[2]); }
+function dayDiff(a,b){ return Math.round((a-b)/86400000); }
 function shiftMonth(mk,n){ var p=mk.split("-"); var d=new Date(+p[0],+p[1]-1+n,1); return d.getFullYear()+"-"+pad(d.getMonth()+1); }
-function daysInMonth(mk){ var p=mk.split("-"); return new Date(+p[0],+p[1],0).getDate(); }
-function daysLeftIn(mk){
-  var now=new Date(), cur=now.getFullYear()+"-"+pad(now.getMonth()+1);
-  if(mk>cur) return daysInMonth(mk);
-  if(mk<cur) return 0;
-  return daysInMonth(mk)-now.getDate()+1;
+function shiftDay(cm, day, wknd){
+  var p = cm.split("-"), y = +p[0], m = +p[1], dim = calDim(cm);
+  var d = Math.min(day||1, dim);
+  if(wknd === "before" || wknd === "after"){
+    var dow = new Date(y, m-1, d).getDay();
+    if(wknd === "before"){ if(dow === 6) d -= 1; else if(dow === 0) d -= 2; }
+    else { if(dow === 6) d += 2; else if(dow === 0) d += 1; }
+    d = Math.max(1, Math.min(d, dim));
+  }
+  return d;
+}
+function cycleCfg(){
+  return (S && S.data && S.data.cycle) ? S.data.cycle : {day:1, wknd:""};
+}
+function isCalendar(){ var c = cycleCfg(); return (c.day||1) <= 1; }
+function periodStart(pk){
+  var c = cycleCfg(), p = pk.split("-");
+  return new Date(+p[0], +p[1]-1, isCalendar() ? 1 : shiftDay(pk, c.day, c.wknd));
+}
+function periodEndExcl(pk){ return periodStart(shiftMonth(pk,1)); }
+function monthKey(iso){
+  var cm = iso.slice(0,7);
+  if(isCalendar()) return cm;
+  return parseISO(iso) >= periodStart(cm) ? cm : shiftMonth(cm,-1);
+}
+function daysInMonth(pk){ return dayDiff(periodEndExcl(pk), periodStart(pk)); }
+function monthLabel(pk){
+  if(isCalendar()){
+    var p=pk.split("-");
+    return new Date(+p[0],+p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});
+  }
+  var a = periodStart(pk), b = new Date(periodEndExcl(pk).getTime() - 86400000);
+  var f = function(d){ return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}); };
+  return f(a)+" – "+f(b)+", "+b.getFullYear();
+}
+function daysLeftIn(pk){
+  var cur = monthKey(todayISO());
+  if(pk > cur) return daysInMonth(pk);
+  if(pk < cur) return 0;
+  return dayDiff(periodEndExcl(pk), parseISO(todayISO()));
 }
 function ordinal(n){ var s=["th","st","nd","rd"], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
 function statusColor(p){ return p>100 ? "var(--over)" : p>80 ? "var(--close)" : "var(--safe)"; }
@@ -181,6 +220,7 @@ function load(){
   if(!d.snapshots) d.snapshots={};
   if(!d.meta) d.meta={lastBackup:null};
   S.data=d;
+  S.mk = monthKey(todayISO());
   S.spend.catId = d.categories.length ? d.categories[0].id : null;
   syncSnapshot();
   save();
@@ -227,7 +267,7 @@ function dueInMonthNo(item, n){
   return everyMonth(item) ? true : item.months.indexOf(n) > -1;
 }
 function dueThisMonth(item, mk){
-  return dueInMonthNo(item, +mk.split("-")[1]);
+  return dueInMonthNo(item, +occCalMonth(item, mk).split("-")[1]);
 }
 function schedLabel(item){
   if(everyMonth(item)) return "monthly";
@@ -253,7 +293,7 @@ function elapsedIn(mk){
   var cur = monthKey(todayISO());
   if(mk < cur) return daysInMonth(mk);
   if(mk > cur) return 0;
-  return new Date().getDate();
+  return dayDiff(parseISO(todayISO()), periodStart(mk)) + 1;
 }
 function canProject(mk){
   return mk === monthKey(todayISO()) && elapsedIn(mk) >= PROJ_MIN_DAYS;
@@ -305,29 +345,25 @@ function nextDue(item, mk){
   return null;
 }
 
-function arrivalDay(day, wknd, mk){
-  var parts = mk.split("-"), y = +parts[0], m = +parts[1], dim = daysInMonth(mk);
-  var d = Math.min(day||1, dim);
-  if(wknd === "before" || wknd === "after"){
-    var dow = new Date(y, m-1, d).getDay();
-    if(wknd === "before"){ if(dow === 6) d -= 1; else if(dow === 0) d -= 2; }
-    else { if(dow === 6) d += 2; else if(dow === 0) d += 1; }
-    d = Math.max(1, Math.min(d, dim));
-  }
-  return d;
+function occCalMonth(item, pk){
+  if(isCalendar()) return pk;
+  return (item.day||1) >= (cycleCfg().day||1) ? pk : shiftMonth(pk,1);
 }
-function arrivalLabel(item, mk){
-  var d = arrivalDay(item.day, item.wknd, mk);
-  var parts = mk.split("-");
-  var dow = new Date(+parts[0], +parts[1]-1, d).toLocaleDateString("en-US",{weekday:"short"});
-  var shifted = d !== Math.min(item.day||1, daysInMonth(mk));
-  return ordinal(d) + (shifted ? " ("+dow+")" : "");
+function occDate(item, pk){
+  var cm = occCalMonth(item, pk), p = cm.split("-");
+  return new Date(+p[0], +p[1]-1, shiftDay(cm, item.day, item.wknd));
+}
+function arrivalLabel(item, pk){
+  var dt = occDate(item, pk), cm = occCalMonth(item, pk);
+  var shifted = dt.getDate() !== Math.min(item.day||1, calDim(cm));
+  return MONTH_ABBR[dt.getMonth()]+" "+dt.getDate() +
+         (shifted ? " ("+dt.toLocaleDateString("en-US",{weekday:"short"})+")" : "");
 }
 function dueReached(item, mk){
   var cur = monthKey(todayISO());
   if(mk < cur) return true;
   if(mk > cur) return false;
-  return new Date().getDate() >= arrivalDay(item.day, item.wknd, mk);
+  return parseISO(todayISO()) >= occDate(item, mk);
 }
 function settled(item, mk){
   if((S.data.paidBills[mk]||[]).indexOf(item.id) > -1) return true;
@@ -346,8 +382,8 @@ function setSettled(id, mk, yes){
   S.data.paidBills[mk]=pd; S.data.unpaidBills[mk]=un;
 }
 
-function stats(){
-  var d=S.data, mk=S.mk;
+function stats(pk){
+  var d=S.data, mk=pk||S.mk;
   var tx = d.transactions.filter(function(t){ return monthKey(t.date)===mk; });
   var byCat={}; tx.forEach(function(t){ byCat[t.categoryId]=(byCat[t.categoryId]||0)+netOf(t); });
   var spent = tx.reduce(function(a,t){ return a+netOf(t); },0);
@@ -358,7 +394,7 @@ function stats(){
   var pendTotal = pend.reduce(function(a,t){ return a+reimbOf(t); },0);
   var budgeted = d.categories.reduce(function(a,c){ return a+(c.budget||0); },0);
 
-  var bySort = function(a,b){ return arrivalDay(a.day,a.wknd,mk) - arrivalDay(b.day,b.wknd,mk); };
+  var bySort = function(a,b){ return occDate(a,mk) - occDate(b,mk); };
   var due = function(r){ return dueThisMonth(r, mk); };
   var billList = d.recurring.filter(function(r){ return r.type==="bill" && due(r); }).sort(bySort);
   var incomeList = d.recurring.filter(function(r){ return r.type==="income" && due(r); }).sort(bySort);
@@ -419,7 +455,7 @@ function stats(){
 
 /* ---------- spend ---------- */
 function spendState(){
-  var sp=S.spend, st=stats();
+  var sp=S.spend, st=stats(monthKey(sp.date));
   var cat = S.data.categories.filter(function(c){ return c.id===sp.catId; })[0];
   var val = parseFloat(sp.amount||"0")||0;
   var splitting = sp.splitTotal!==null;
@@ -594,8 +630,8 @@ function renderMonth(){
            ' of '+money(st.budgeted,false)+
            (st.income>0 ? ' · month-end cash at this pace '+money(st.projCash,false) : '')+'</div></div>';
   } else if(S.mk === monthKey(todayISO()) && st.budgeted>0){
-    h += '<div style="margin-top:12px;font-size:12px;color:#9DB6BC">Month-end projection starts on the '+
-         ordinal(PROJ_MIN_DAYS)+' — too early to call.</div>';
+    h += '<div style="margin-top:12px;font-size:12px;color:#9DB6BC">Projection starts after the first '+
+         PROJ_MIN_DAYS+' days of the budget month — too early to call.</div>';
   } else if(st.isPast && st.budgeted>0 && st.tx.length){
     var fin = st.budgeted - st.spent;
     h += '<div style="margin-top:12px;font-size:14px;font-weight:600;color:'+(fin>=0?"#9FD9BD":"#F4B3A8")+'">'+
@@ -643,9 +679,9 @@ function renderMonth(){
       var short = dueNow ? Math.max(0, need-have) : 0;
       var nxt = nextDue(r, S.mk);
       var cap = dueNow
-        ? (short>0 ? "short "+money(short,false)+" for the "+arrivalLabel(r,S.mk)
+        ? (short>0 ? "short "+money(short,false)+" for "+arrivalLabel(r,S.mk)
                    : "drawn "+arrivalLabel(r,S.mk)+" · "+money(need,false))
-        : (nxt ? "next "+MONTH_ABBR[+nxt.split("-")[1]-1]+" "+arrivalLabel(r,nxt)+" · "+money(plannedFor(r,nxt),false)
+        : (nxt ? "next "+arrivalLabel(r,nxt)+" · "+money(plannedFor(r,nxt),false)
                : "no payment scheduled");
       h += '<div class="li">'+
            '<div class="grow namebtn" style="cursor:default">'+
@@ -710,11 +746,10 @@ function recurringSection(title, list, state, noteText, emptyText){
   if(!list.length) h += '<div class="empty" style="padding:16px">'+emptyText+'</div>';
   list.forEach(function(r){
     var on = state[r.id], auto = r.auto!==false, manual = isOverridden(r.id, S.mk);
-    var day = arrivalDay(r.day, r.wknd, S.mk);
-    var late = !on && S.mk===cur && day < new Date().getDate();
+    var late = !on && occDate(r, S.mk) < parseISO(todayISO());
     var verb = r.type==="bill" ? "cleared" : "in";
     var label = on ? (manual ? "marked "+verb : verb+" "+arrivalLabel(r, S.mk))
-                   : late ? (r.type==="bill" ? "past due" : "not in yet")
+                   : late ? (r.type==="bill" ? "past due · "+arrivalLabel(r, S.mk) : "not in yet")
                           : "due "+arrivalLabel(r, S.mk);
     h += '<div class="li">'+
          '<button class="box'+(on?" on":"")+'" data-act="toggleitem" data-id="'+r.id+'">'+(on?"✓":"")+'</button>'+
@@ -798,8 +833,50 @@ function addRow(kind, placeholder){
     '<button class="addbtn" data-act="add" data-kind="'+kind+'">+ Add</button></div>';
 }
 
+/* Changing where the budget month starts moves every period boundary. Manual
+   ticks and one-month amount changes belong to a specific payment (the Electric
+   bill of Sep 10), so each one is carried to whichever budget month that
+   payment falls in under the new boundaries. Nothing is lost. */
+function occMonthUnder(item, pk, day){
+  if((day||1) <= 1) return pk;
+  return (item.day||1) >= day ? pk : shiftMonth(pk,1);
+}
+function periodForOcc(item, cm, day){
+  if((day||1) <= 1) return cm;
+  return (item.day||1) >= day ? cm : shiftMonth(cm,-1);
+}
+function remapByPayment(map, oldDay, newDay, isValueMap){
+  var out = {};
+  Object.keys(map||{}).forEach(function(pk){
+    var entry = map[pk];
+    var ids = isValueMap ? Object.keys(entry) : entry;
+    ids.forEach(function(id){
+      var item = S.data.recurring.filter(function(r){ return r.id===id; })[0];
+      var npk = item ? periodForOcc(item, occMonthUnder(item, pk, oldDay), newDay) : pk;
+      if(isValueMap){ if(!out[npk]) out[npk]={}; out[npk][id] = entry[id]; }
+      else { if(!out[npk]) out[npk]=[]; if(out[npk].indexOf(id)<0) out[npk].push(id); }
+    });
+  });
+  return out;
+}
+function applyCycle(day, wknd){
+  day = Math.min(Math.max(parseInt(day,10)||1, 1), 28);
+  wknd = wknd || "";
+  var old = cycleCfg(), oldDay = old.day||1;
+  if(oldDay===day && (old.wknd||"")===wknd) return false;
+  if(oldDay !== day){
+    S.data.paidBills   = remapByPayment(S.data.paidBills,   oldDay, day, false);
+    S.data.unpaidBills = remapByPayment(S.data.unpaidBills, oldDay, day, false);
+    S.data.amounts     = remapByPayment(S.data.amounts,     oldDay, day, true);
+  }
+  S.data.cycle = {day:day, wknd:wknd};
+  S.mk = monthKey(todayISO());
+  save();
+  return true;
+}
+
 function planLine(){
-  var st = stats();
+  var st = stats(monthKey(todayISO()));
   if(!(st.income>0)) return {cls:"", html:""};
   return {
     cls: st.cushion<0 ? "warn" : "good",
@@ -825,6 +902,18 @@ function renderSetup(){
   h += '<div class="panel"><div style="font-size:18px;font-weight:600">Setup</div>'+
        '<div class="hdr-line">Budgets are monthly. A bill set to <b>auto</b> comes off by itself on its due date — no tapping needed.</div>'+
        '<div id="plan" class="'+pl.cls+'" style="font-size:14px;margin-top:10px">'+pl.html+'</div></div>';
+
+  var cyc = cycleCfg();
+  var cw = cyc.wknd==="before" ? "→Fri" : cyc.wknd==="after" ? "→Mon" : "exact day";
+  h += '<div class="wrap"><div class="sec"><span>Budget month</span><span class="note">'+
+       (isCalendar() ? "calendar months" : "now: "+esc(monthLabel(monthKey(todayISO()))))+'</span></div>';
+  h += '<div class="caption">The day your budget month starts. Set it to payday and each month runs payday to payday. '+
+       'Day 1 means ordinary calendar months.</div>';
+  h += '<div class="setbox"><div class="setrow" style="gap:8px">'+
+       '<span style="flex:1;font-size:14px">Starts on day</span>'+
+       '<input class="day" inputmode="numeric" data-edit="cycle:day" value="'+(cyc.day||1)+'">'+
+       '<button class="autopill'+(cyc.wknd?" on":"")+'" data-act="togglecyclewknd">'+cw+'</button>'+
+       '</div></div></div>';
 
   h += '<div class="wrap"><div class="sec"><span>Monthly budgets</span></div><div class="setbox">';
   d.categories.forEach(function(c){ h += setRow("cat", c, false); });
@@ -953,6 +1042,11 @@ function commit(){
 
 function q(v){ return '"'+String(v).replace(/"/g,'""')+'"'; }
 
+function periodISO(pk){
+  var d = periodStart(pk);
+  return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+}
+
 function monthsWithData(){
   var set={};
   S.data.transactions.forEach(function(t){ set[monthKey(t.date)]=1; });
@@ -963,7 +1057,7 @@ function monthsWithData(){
 
 function summaryCsv(){
   var d=S.data;
-  var rows=[["Month","Type","Item","Planned","Actual","Remaining","Pct Used"]];
+  var rows=[["Period","Type","Item","Planned","Actual","Remaining","Pct Used"]];
   monthsWithData().forEach(function(mk){
     var tx = d.transactions.filter(function(t){ return monthKey(t.date)===mk; });
     var byCat={}; tx.forEach(function(t){ byCat[t.categoryId]=(byCat[t.categoryId]||0)+t.amount; });
@@ -997,6 +1091,7 @@ function summaryCsv(){
                  (-byCat[cid]).toFixed(2),""]);
     });
   });
+  rows.slice(1).forEach(function(r){ r[0] = periodISO(r[0]); });
   return rows.map(function(r){ return r.join(","); }).join("\n");
 }
 
@@ -1012,10 +1107,10 @@ function shareCsv(name, text){
 }
 
 function csvText(){
-  var rows = [["Date","Description","Category","Amount","Reimbursable","Reimbursed On","Net"]];
+  var rows = [["Period","Date","Description","Category","Amount","Reimbursable","Reimbursed On","Net"]];
   S.data.transactions.slice().sort(function(a,b){ return a.date<b.date?-1:1; }).forEach(function(t){
     var c = S.data.categories.filter(function(x){ return x.id===t.categoryId; })[0];
-    rows.push([t.date, '"'+t.desc.replace(/"/g,'""')+'"', c?c.name:"Uncategorized", t.amount.toFixed(2),
+    rows.push([periodISO(monthKey(t.date)), t.date, '"'+t.desc.replace(/"/g,'""')+'"', c?c.name:"Uncategorized", t.amount.toFixed(2),
                reimbOf(t).toFixed(2), t.reimbGot||"", netOf(t).toFixed(2)]);
   });
   return rows.map(function(r){ return r.join(","); }).join("\n");
@@ -1099,6 +1194,12 @@ document.addEventListener("click", function(e){
       save();
     }
   }
+  else if(act==="togglecyclewknd"){
+    var cc = cycleCfg();
+    var nw = cc.wknd==="before" ? "after" : cc.wknd==="after" ? "" : "before";
+    if(isCalendar()){ flash("Set a start day first — the weekend rule only matters for a payday month.", false); return; }
+    applyCycle(cc.day, nw);
+  }
   else if(act==="togglewknd"){
     var wr = S.data.recurring.filter(function(x){ return x.id===el.dataset.id; })[0];
     if(wr){ wr.wknd = wr.wknd==="before" ? "after" : wr.wknd==="after" ? "" : "before"; save(); }
@@ -1166,6 +1267,14 @@ function onFieldEdit(e){
   var el = e.target;
   if(el.dataset.edit){
     var parts = el.dataset.edit.split(":"), kind = parts[0], field = parts[1], id = el.dataset.id;
+    if(kind==="cycle"){
+      if(e.type==="change"){
+        var changed = applyCycle(el.value, cycleCfg().wknd);
+        render();
+        if(changed) flash("Budget month now runs "+monthLabel(S.mk).replace(/, \d{4}$/,""), true);
+      }
+      return;
+    }
     if(kind==="monthamt"){
       if(!S.data.amounts[S.mk]) S.data.amounts[S.mk]={};
       if(el.value==="") delete S.data.amounts[S.mk][el.dataset.id];
@@ -1228,6 +1337,7 @@ document.getElementById("restore").addEventListener("change", function(e){
       if(!d.snapshots) d.snapshots={};
       if(!d.meta) d.meta={lastBackup:null};
       S.data = d;
+      S.mk = monthKey(todayISO());
       S.spend.catId = d.categories.length ? d.categories[0].id : null;
       save(); S.flash = "Backup restored.";
     } catch(err){ S.flash = "That file isn't a budget backup."; }
