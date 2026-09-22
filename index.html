@@ -211,6 +211,7 @@ var S = {
 };
 
 function load(){
+  if(!probeStorage()) S.storageBroken = true;
   var raw=null;
   try { raw = localStorage.getItem(KEY); } catch(e){}
   var d = raw ? JSON.parse(raw) : seed();
@@ -247,9 +248,20 @@ function syncSnapshot(){
   if(!S.data.snapshots) S.data.snapshots={};
   S.data.snapshots[monthKey(todayISO())] = snapItems();
 }
+/* If the browser refuses to store anything, say so on every screen until it
+   stops refusing. A warning that disappears on the next tap is no warning. */
 function save(){
-  try { syncSnapshot(); localStorage.setItem(KEY, JSON.stringify(S.data)); }
-  catch(e){ S.flash = "Couldn't save — storage is full or blocked."; }
+  try {
+    syncSnapshot();
+    localStorage.setItem(KEY, JSON.stringify(S.data));
+    if(S.storageBroken){ S.storageBroken = false; setTimeout(render, 0); }
+  } catch(e){
+    if(!S.storageBroken){ S.storageBroken = true; setTimeout(render, 0); }
+  }
+}
+function probeStorage(){
+  try { localStorage.setItem("budget-probe","1"); localStorage.removeItem("budget-probe"); return true; }
+  catch(e){ return false; }
 }
 
 /* Anything recurring lands on a date. Auto items settle themselves once that
@@ -972,6 +984,12 @@ function render(){
     }).join("")+'</div>';
 
   if(S.flash) h += '<div style="position:fixed;left:16px;right:16px;bottom:80px;background:'+(S.flashOk?"var(--safe)":"var(--over)")+';color:#fff;padding:12px 16px;border-radius:12px;font-size:14px">'+esc(S.flash)+'</div>';
+  if(S.storageBroken){
+    h = '<div style="position:sticky;top:0;z-index:20;background:var(--over);color:#fff;'+
+        'padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 12px;font-size:14px;line-height:1.35">'+
+        '<b>Not saving.</b> This browser is refusing to store anything, so nothing you enter will be kept. '+
+        'Usually Private Browsing, or Settings → Safari → Block All Cookies is on.</div>' + h;
+  }
   document.getElementById("app").innerHTML = h;
   if(S.spend.showNote && S.tab==="spend" && !S.spend.receipt){
     var n = document.getElementById("noteinput");
